@@ -21,7 +21,13 @@ from sktime.utils.validation.series import check_equal_time_index
 from sktime.utils.validation.series import check_series
 
 
-def check_y_X(y, X=None, allow_empty=False, allow_constant=True):
+def check_y_X(
+    y,
+    X=None,
+    allow_empty=False,
+    allow_constant=True,
+    enforce_index_type=None,
+):
     """Validate input data.
 
     Parameters
@@ -32,56 +38,81 @@ def check_y_X(y, X=None, allow_empty=False, allow_constant=True):
         If True, empty `y` does not raise an error.
     allow_constant : bool, optional (default=True)
         If True, constant `y` does not raise an error.
+    enforce_index_type : type, optional (default=None)
+        type of time index
 
     Raises
     ------
     ValueError
         If y or X are invalid inputs
     """
-    y = check_y(y, allow_empty=allow_empty, allow_constant=allow_constant)
+    y = check_y(
+        y,
+        allow_empty=allow_empty,
+        allow_constant=allow_constant,
+        enforce_index_type=enforce_index_type,
+    )
 
     if X is not None:
+        # No need to also enforce the index type on X since we're
+        # checking for index equality here
         X = check_X(X)
         check_equal_time_index(y, X)
 
     return y, X
 
 
-def check_X(X, allow_empty=False, enforce_univariate=False):
+def check_X(
+    X,
+    allow_empty=False,
+    enforce_univariate=False,
+    enforce_index_type=None,
+):
     """Validate input data.
 
     Parameters
     ----------
     X : pd.Series, pd.DataFrame, np.ndarray
     allow_empty : bool, optional (default=False)
-        If True, empty `y` raises an error.
-
+        If False, empty `X` raises an error.
+    enforce_index_type : type, optional (default=None)
+        type of time index
+    enforce_univariate : bool, optional (default=False)
+        If True, multivariate X will raise an error.
     Returns
     -------
-    y : pd.Series, pd.DataFrame
+    X : pd.Series, pd.DataFrame
         Validated input data.
 
     Raises
     ------
     ValueError, TypeError
-        If y is an invalid input
+        If X is an invalid input
+    UserWarning
+        Warning that X is given and model can't use it
     """
     # Check if pandas series or numpy array
     return check_series(
-        X, enforce_univariate=enforce_univariate, allow_empty=allow_empty
+        X,
+        enforce_univariate=enforce_univariate,
+        allow_empty=allow_empty,
+        enforce_index_type=enforce_index_type,
+        allow_numpy=False,
     )
 
 
-def check_y(y, allow_empty=False, allow_constant=True):
+def check_y(y, allow_empty=False, allow_constant=True, enforce_index_type=None):
     """Validate input data.
 
     Parameters
     ----------
     y : pd.Series
     allow_empty : bool, optional (default=False)
-        If True, empty `y` raises an error.
+        If False, empty `y` raises an error.
     allow_constant : bool, optional (default=True)
         If True, constant `y` does not raise an error.
+    enforce_index_type : type, optional (default=None)
+        type of time index
 
     Returns
     -------
@@ -93,7 +124,11 @@ def check_y(y, allow_empty=False, allow_constant=True):
         If y is an invalid input
     """
     y = check_series(
-        y, enforce_univariate=True, allow_empty=allow_empty, allow_numpy=False
+        y,
+        enforce_univariate=True,
+        allow_empty=allow_empty,
+        allow_numpy=False,
+        enforce_index_type=enforce_index_type,
     )
 
     if not allow_constant:
@@ -148,22 +183,31 @@ def check_step_length(step_length):
     return step_length
 
 
-def check_sp(sp):
+def check_sp(sp, enforce_list=False):
     """Validate seasonal periodicity.
 
     Parameters
     ----------
-    sp : int
+    sp : int or [int/float]
         Seasonal periodicity
+    emforce_list : bool, optional (default=False)
+        If true, convert sp to list if not list.
 
     Returns
     -------
-    sp : int
+    sp : int or [int/float]
         Validated seasonal periodicity
     """
     if sp is not None:
-        if not is_int(sp) or sp < 1:
-            raise ValueError("`sp` must be a positive integer >= 1 or None")
+        if enforce_list and is_int(sp) and sp >= 1:
+            sp = [sp]
+        elif (enforce_list and isinstance(sp, list)) or (is_int(sp) and sp >= 1):
+            pass
+        else:
+            if enforce_list:
+                raise ValueError("`sp` must be an int >= 1, [float/int] or None")
+            else:
+                raise ValueError("`sp` must be an int >= 1 or None")
     return sp
 
 
@@ -216,7 +260,7 @@ def check_alpha(alpha):
     if isinstance(alpha, list):
         if not all(isinstance(a, float) for a in alpha):
             raise ValueError(
-                "When `alpha` is passed as a list, " "it must be a list of floats"
+                "When `alpha` is passed as a list, it must be a list of floats"
             )
 
     elif isinstance(alpha, float):
@@ -268,11 +312,11 @@ def check_scoring(scoring):
 
     Parameters
     ----------
-    scoring : object of class MetricFunctionWrapper from sktime.permormance_metrics.
+    scoring : object of class MetricFunctionWrapper from sktime.performance_metrics.
 
     Returns
     ----------
-    scoring : object of class MetricFunctionWrapper of sktime.permormance_metrics.
+    scoring : object of class MetricFunctionWrapper of sktime.performance_metrics.
     sMAPE(mean percentage error)
         if the object is None.
 
@@ -281,7 +325,7 @@ def check_scoring(scoring):
     TypeError
         if object is not callable from current scope.
         if object is not an instance of class MetricFunctionWrapper of
-        sktime.permormance_metrics.
+        sktime.performance_metrics.
     """
     from sktime.performance_metrics.forecasting._classes import MetricFunctionWrapper
     from sktime.performance_metrics.forecasting import sMAPE

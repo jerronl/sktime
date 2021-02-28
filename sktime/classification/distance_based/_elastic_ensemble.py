@@ -11,6 +11,7 @@ import time
 from itertools import product
 
 import numpy as np
+import pandas as pd
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import LeaveOneOut
@@ -30,53 +31,65 @@ from sktime.distances.elastic_cython import lcss_distance as lcss_c
 from sktime.distances.elastic_cython import msm_distance as msm_c
 from sktime.distances.elastic_cython import wddtw_distance as wddtw_c
 from sktime.distances.elastic_cython import wdtw_distance as wdtw_c
-from sktime.transformers.panel.summarize import DerivativeSlopeTransformer
+from sktime.transformations.panel.summarize import DerivativeSlopeTransformer
 from sktime.utils.validation.panel import check_X
 from sktime.utils.validation.panel import check_X_y
 
 
 class ElasticEnsemble(BaseClassifier):
-    """The Elastic Ensemble as described in
-    @article{lines15elastic,
-      title={Time Series Classification with Ensembles of Elastic Distance
-      Measures},
-      author={J. Lines and A. Bagnall},
-      journal={Data Mining and Knowledge Discovery},
-      volume={29},
-      issue={3},
-      pages={565--592},
-      year={2015}
-    }
+    """
+    The Elastic Ensemble (EE) as described in Jason Lines and Anthony Bagnall,
+    "Time Series Classification with Ensembles of Elastic Distance Measures",
+    Data Mining and Knowledge Discovery, 29(3), 2015.
+
     https://link.springer.com/article/10.1007/s10618-014-0361-2
 
-    Overview: Input n series length m
-    EE contains 11
-    An ensemble of elastic nearest neighbor classifiers
+    Overview:
+
+    - Input n series length m
+    - EE is an ensemble of elastic nearest neighbor classifiers
+
+    .. note::
+
+        For the original Java version, see `ElasticEnsemble <https://github.com
+        /uea-machine-learning/tsml/blob/master/src/main/java/tsml/classifiers/
+        distance_based/ElasticEnsemble.java>`__.
+
     Parameters
     ----------
-    distance_measures                   : a list of strings identifying
-    which distance measures to include optional (default='all')
-    proportion_of_param_option          :    the proportion of the parameter
-    grid space to search optional(default =1, i.e. all)
-    proportion_train_in_param_finding   : proportion of the train set to use
-    in the parameter search optional (default =1, i.e. all)
-    proportion_train_for_test           : proportion of the train set to use
-    in classifying new cases optional (default =1, i.e. all)
-    random_state                         : int  seed for random, integer,
-    optional (default to seed 0)
-    verbose                             : int, if >0 prints out debug inf,
-    optional (default=0)
+    distance_measures : list of strings, optional (default="all")
+      A list of strings identifying which distance measures to include.
+    proportion_of_param_option : float, optional (default=1)
+      The proportion of the parameter grid space to search optional.
+    proportion_train_in_param_finding : float, optional (default=1)
+      The proportion of the train set to use in the parameter search optional.
+    proportion_train_for_test : float, optional (default=1)
+      The proportion of the train set to use in classifying new cases optional.
+    n_jobs : int or None, optional (default=None)
+      The number of jobs to run in parallel for both `fit` and `predict`.
+      ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+      ``-1`` means using all processors.
+    random_state : int, default=0
+      The random seed.
+    verbose : int, default=0
+      If ``>0``, then prints out debug information.
 
     Attributes
     ----------
-    estimators_ = None                  :  list of classifiers
-    train_accs_by_classifier = None     :  train accuracies of the classifiers
-    train_preds_by_classifier = None    :  train predictions of each classifier
-    classes_ = None                     :  class values (isnt this inherited?)
-    train = None                        :   train data
-    constituent_build_times = None      : stored build time for each classifier
-
+    estimators_ : list
+      A list storing all classifiers
+    train_accs_by_classifier : ndarray
+      Store the train accuracies of the classifiers
+    train_preds_by_classifier : list
+      Store the train predictions of each classifier
     """
+
+    # Capabilities: data types this classifier can handle
+    capabilities = {
+        "multivariate": False,
+        "unequal_length": False,
+        "missing_values": False,
+    }
 
     def __init__(
         self,
@@ -84,6 +97,7 @@ class ElasticEnsemble(BaseClassifier):
         proportion_of_param_options=1.0,
         proportion_train_in_param_finding=1.0,
         proportion_train_for_test=1.0,
+        n_jobs=None,
         random_state=0,
         verbose=0,
     ):
@@ -102,11 +116,12 @@ class ElasticEnsemble(BaseClassifier):
         self.proportion_train_in_param_finding = proportion_train_in_param_finding
         self.proportion_of_param_options = proportion_of_param_options
         self.proportion_train_for_test = proportion_train_for_test
-        self.random_state = random_state
         self.estimators_ = None
         self.train_accs_by_classifier = None
         self.train_preds_by_classifier = None
         self.classes_ = None
+        self.n_jobs = n_jobs
+        self.random_state = random_state
         self.verbose = verbose
         self.train = None
         self.constituent_build_times = None
@@ -127,7 +142,7 @@ class ElasticEnsemble(BaseClassifier):
         self : object
         """
 
-        X, y = check_X_y(X, y, enforce_univariate=True, coerce_to_pandas=True)
+        X, y = check_X_y(X, y, enforce_univariate=True, coerce_to_pandas=False)
 
         # Derivative DTW (DDTW) uses the regular DTW algorithm on data that
         # are transformed into derivatives.
@@ -142,14 +157,16 @@ class ElasticEnsemble(BaseClassifier):
         ) or self.distance_measures.__contains__(wddtw_c):
             der_X = DerivativeSlopeTransformer().fit_transform(X)
             # reshape X for use with the efficient cython distance measures
-            der_X = np.array(
-                [np.asarray([x]).reshape(len(x), 1) for x in der_X.iloc[:, 0]]
-            )
+            if isinstance(X, pd.DataFrame):
+                der_X = np.array(
+                    [np.asarray([x]).reshape(1, len(x)) for x in der_X.iloc[:, 0]]
+                )
         else:
             der_X = None
 
         # reshape X for use with the efficient cython distance measures
-        X = np.array([np.asarray([x]).reshape(len(x), 1) for x in X.iloc[:, 0]])
+        if isinstance(X, pd.DataFrame):
+            X = np.array([np.asarray([x]).reshape(1, len(x)) for x in X.iloc[:, 0]])
 
         self.train_accs_by_classifier = np.zeros(len(self.distance_measures))
         self.train_preds_by_classifier = [None] * len(self.distance_measures)
@@ -261,13 +278,14 @@ class ElasticEnsemble(BaseClassifier):
 
                 grid = GridSearchCV(
                     estimator=KNeighborsTimeSeriesClassifier(
-                        metric=this_measure, n_neighbors=1, algorithm="brute"
+                        distance=this_measure, n_neighbors=1
                     ),
                     param_grid=ElasticEnsemble._get_100_param_options(
                         self.distance_measures[dm], X
                     ),
                     cv=LeaveOneOut(),
                     scoring="accuracy",
+                    n_jobs=self.n_jobs,
                     verbose=self.verbose,
                 )
                 grid.fit(param_train_to_use, param_train_y)
@@ -277,14 +295,15 @@ class ElasticEnsemble(BaseClassifier):
             else:
                 grid = RandomizedSearchCV(
                     estimator=KNeighborsTimeSeriesClassifier(
-                        metric=this_measure, n_neighbors=1, algorithm="brute"
+                        distance=this_measure, n_neighbors=1
                     ),
                     param_distributions=ElasticEnsemble._get_100_param_options(
                         self.distance_measures[dm], X
                     ),
+                    n_iter=100 * self.proportion_of_param_options,
                     cv=LeaveOneOut(),
                     scoring="accuracy",
-                    n_iter=100 * self.proportion_of_param_options,
+                    n_jobs=self.n_jobs,
                     random_state=rand,
                     verbose=self.verbose,
                 )
@@ -297,10 +316,9 @@ class ElasticEnsemble(BaseClassifier):
             # was used previously. TO-DO: determine how to extract
             # predictions for the best param option from GridSearchCV)
             best_model = KNeighborsTimeSeriesClassifier(
-                algorithm="brute",
                 n_neighbors=1,
-                metric=this_measure,
-                metric_params=grid.best_params_["metric_params"],
+                distance=this_measure,
+                distance_params=grid.best_params_["distance_params"],
             )
             preds = cross_val_predict(
                 best_model, full_train_to_use, y, cv=LeaveOneOut()
@@ -314,17 +332,16 @@ class ElasticEnsemble(BaseClassifier):
                     + ": "
                     + str(acc)
                     + " (with parameter setting: "
-                    + str(grid.best_params_["metric_params"])
+                    + str(grid.best_params_["distance_params"])
                     + ")"
                 )
 
             # Finally, reset the classifier for this measure and parameter
             # option, ready to be called for test classification
             best_model = KNeighborsTimeSeriesClassifier(
-                algorithm="brute",
                 n_neighbors=1,
-                metric=this_measure,
-                metric_params=grid.best_params_["metric_params"],
+                distance=this_measure,
+                distance_params=grid.best_params_["distance_params"],
             )
             best_model.fit(full_train_to_use, y)
             end_build_time = time.time()
@@ -339,7 +356,7 @@ class ElasticEnsemble(BaseClassifier):
 
     def predict_proba(self, X):
         self.check_is_fitted()
-        X = check_X(X, enforce_univariate=True, coerce_to_pandas=True)
+        X = check_X(X, enforce_univariate=True, coerce_to_pandas=False)
 
         # Derivative DTW (DDTW) uses the regular DTW algorithm on data that
         # are transformed into derivatives.
@@ -353,14 +370,16 @@ class ElasticEnsemble(BaseClassifier):
             ddtw_c
         ) or self.distance_measures.__contains__(wddtw_c):
             der_X = DerivativeSlopeTransformer().fit_transform(X)
-            der_X = np.array(
-                [np.asarray([x]).reshape(len(x), 1) for x in der_X.iloc[:, 0]]
-            )
+            if isinstance(X, pd.DataFrame):
+                der_X = np.array(
+                    [np.asarray([x]).reshape(1, len(x)) for x in der_X.iloc[:, 0]]
+                )
         else:
             der_X = None
 
         # reshape X for use with the efficient cython distance measures
-        X = np.array([np.asarray([x]).reshape(len(x), 1) for x in X.iloc[:, 0]])
+        if isinstance(X, pd.DataFrame):
+            X = np.array([np.asarray([x]).reshape(1, len(x)) for x in X.iloc[:, 0]])
 
         output_probas = []
         train_sum = 0
@@ -487,9 +506,9 @@ class ElasticEnsemble(BaseClassifier):
             return np.arange(min_val, max_val + inc / 2, inc)
 
         if distance_measure == dtw_c or distance_measure == ddtw_c:
-            return {"metric_params": [{"w": x / 100} for x in range(0, 100)]}
+            return {"distance_params": [{"w": x / 100} for x in range(0, 100)]}
         elif distance_measure == wdtw_c or distance_measure == wddtw_c:
-            return {"metric_params": [{"g": x / 100} for x in range(0, 100)]}
+            return {"distance_params": [{"g": x / 100} for x in range(0, 100)]}
         elif distance_measure == lcss_c:
             train_std = np.std(train_x)
             epsilons = get_inclusive(train_std * 0.2, train_std, 10)
@@ -497,7 +516,7 @@ class ElasticEnsemble(BaseClassifier):
             deltas = [int(d) for d in deltas]
             a = list(product(epsilons, deltas))
             return {
-                "metric_params": [
+                "distance_params": [
                     {"epsilon": a[x][0], "delta": a[x][1]} for x in range(0, len(a))
                 ]
             }
@@ -507,7 +526,7 @@ class ElasticEnsemble(BaseClassifier):
             g_vals = get_inclusive(train_std * 0.2, train_std, 10)
             b_and_g = list(product(band_sizes, g_vals))
             return {
-                "metric_params": [
+                "distance_params": [
                     {"band_size": b_and_g[x][0], "g": b_and_g[x][1]}
                     for x in range(0, len(b_and_g))
                 ]
@@ -518,7 +537,7 @@ class ElasticEnsemble(BaseClassifier):
             c = get_inclusive(1, 10, 26)
             d = get_inclusive(10, 100, 26)
             return {
-                "metric_params": [
+                "distance_params": [
                     {"c": x} for x in np.concatenate([a, b[1:], c[1:], d[1:]])
                 ]
             }

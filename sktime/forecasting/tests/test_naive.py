@@ -12,7 +12,7 @@ from sktime.forecasting.naive import NaiveForecaster
 from sktime.forecasting.tests._config import TEST_OOS_FHS
 from sktime.forecasting.tests._config import TEST_SPS
 from sktime.forecasting.tests._config import TEST_WINDOW_LENGTHS
-from sktime.utils._testing.forecasting import assert_correct_pred_time_index
+from sktime.utils._testing.forecasting import _assert_correct_pred_time_index
 from sktime.utils.validation.forecasting import check_fh
 
 n_timepoints = 30
@@ -53,11 +53,11 @@ def test_strategy_last_seasonal(fh, sp):
     y_pred = f.predict(fh)
 
     # check predicted index
-    assert_correct_pred_time_index(y_pred.index, y_train.index[-1], fh)
+    _assert_correct_pred_time_index(y_pred.index, y_train.index[-1], fh)
 
     # check values
     fh = check_fh(fh)  # get well formatted fh
-    reps = np.int(np.ceil(max(fh) / sp))
+    reps = int(np.ceil(max(fh) / sp))
     expected = np.tile(y_train.iloc[-sp:], reps=reps)[fh - 1]
     np.testing.assert_array_equal(y_pred, expected)
 
@@ -72,15 +72,15 @@ def test_strategy_mean_seasonal(fh, sp, window_length):
         y_pred = f.predict(fh)
 
         # check predicted index
-        assert_correct_pred_time_index(y_pred.index, y_train.index[-1], fh)
+        _assert_correct_pred_time_index(y_pred.index, y_train.index[-1], fh)
 
         if window_length is None:
             window_length = len(y_train)
 
         # check values
         fh = check_fh(fh)  # get well formatted fh
-        reps = np.int(np.ceil(max(fh) / sp))
-        last_window = y_train.iloc[-window_length:].values
+        reps = int(np.ceil(max(fh) / sp))
+        last_window = y_train.iloc[-window_length:].to_numpy().astype(float)
         last_window = np.pad(
             last_window,
             (0, sp - len(last_window) % sp),
@@ -88,7 +88,7 @@ def test_strategy_mean_seasonal(fh, sp, window_length):
             constant_values=np.nan,
         )
 
-        last_window = last_window.reshape(np.int(np.ceil(len(last_window) / sp)), sp)
+        last_window = last_window.reshape(int(np.ceil(len(last_window) / sp)), sp)
         expected = np.tile(np.nanmean(last_window, axis=0), reps=reps)[fh - 1]
         np.testing.assert_array_equal(y_pred, expected)
 

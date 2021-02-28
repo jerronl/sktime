@@ -10,16 +10,16 @@ from sklearn.preprocessing import FunctionTransformer
 from sklearn.tree import DecisionTreeClassifier
 from statsmodels.tsa.stattools import acf
 
-from sktime.transformers.panel.compose import make_row_transformer
-from sktime.transformers.panel.segment import RandomIntervalSegmenter
+from sktime.transformations.panel.compose import make_row_transformer
+from sktime.transformations.panel.segment import RandomIntervalSegmenter
 
-from sktime.transformers.panel.reduce import Tabularizer
+from sktime.transformations.panel.reduce import Tabularizer
 from sklearn.pipeline import Pipeline
 from sktime.series_as_features.compose import FeatureUnion
 from sktime.classification.compose import TimeSeriesForestClassifier
-from sktime.utils.time_series import time_series_slope
+from sktime.utils.slope_and_trend import _slope
 import sktime.classification.interval_based._tsf as ib
-import sktime.classification.frequency_based._rise as fb
+import sktime.classification.interval_based._rise as fb
 import sktime.classification.dictionary_based._boss as db
 import sktime.classification.distance_based._time_series_neighbors as dist
 import sktime.contrib.experiments as exp
@@ -178,9 +178,7 @@ def tsf_benchmarking():
                         (
                             "slope",
                             make_row_transformer(
-                                FunctionTransformer(
-                                    func=time_series_slope, validate=False
-                                )
+                                FunctionTransformer(func=_slope, validate=False)
                             ),
                         ),
                     ]
@@ -271,7 +269,7 @@ def boss_benchmarking():
 
 
 distance_test = [
-    "Chinatown",
+    "UnitTest",
     "ItalyPowerDemand",
 ]
 
@@ -280,7 +278,7 @@ def elastic_distance_benchmarking():
     for i in range(0, int(len(distance_test))):
         dataset = distance_test[i]
         print(str(i) + " problem = " + dataset + " writing to " + results_dir + "/DTW/")
-        dtw = dist.KNeighborsTimeSeriesClassifier(metric="dtw")
+        dtw = dist.KNeighborsTimeSeriesClassifier(distance="dtw")
         exp.run_experiment(
             overwrite=False,
             problem_path=data_dir,
@@ -290,7 +288,7 @@ def elastic_distance_benchmarking():
             dataset=dataset,
             train_file=False,
         )
-        twe = dist.KNeighborsTimeSeriesClassifier(metric="dtw")
+        twe = dist.KNeighborsTimeSeriesClassifier(distance="dtw")
         exp.run_experiment(
             overwrite=False,
             problem_path=data_dir,

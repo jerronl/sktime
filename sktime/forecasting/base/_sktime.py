@@ -6,6 +6,7 @@ __author__ = ["Markus Löning", "@big-o"]
 __all__ = ["_SktimeForecaster", "_BaseWindowForecaster"]
 
 from contextlib import contextmanager
+from warnings import warn
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,7 @@ from sktime.forecasting.base._base import DEFAULT_ALPHA
 from sktime.forecasting.model_selection import CutoffSplitter
 from sktime.forecasting.model_selection import SlidingWindowSplitter
 from sktime.utils.datetime import _shift
+from sktime.utils.validation.forecasting import check_X
 from sktime.utils.validation.forecasting import check_alpha
 from sktime.utils.validation.forecasting import check_cv
 from sktime.utils.validation.forecasting import check_fh
@@ -35,7 +37,7 @@ class _SktimeForecaster(BaseForecaster):
         self._cutoff = None  # reference point for relative fh
         super(_SktimeForecaster, self).__init__()
 
-    def _set_y_X(self, y, X=None):
+    def _set_y_X(self, y, X=None, enforce_index_type=None):
         """Set training data.
 
         Parameters
@@ -46,12 +48,20 @@ class _SktimeForecaster(BaseForecaster):
             Exogenous time series
         """
         # set initial training data
-        self._y, self._X = check_y_X(y, X, allow_empty=False)
+        self._y, self._X = check_y_X(
+            y, X, allow_empty=False, enforce_index_type=enforce_index_type
+        )
 
         # set initial cutoff to the end of the training data
         self._set_cutoff(y.index[-1])
 
-    def _update_y_X(self, y, X=None):
+    def _update_X(self, X, enforce_index_type=None):
+        if X is not None:
+            X = check_X(X, enforce_index_type=enforce_index_type)
+            if X is len(X) > 0:
+                self._X = X.combine_first(self._X)
+
+    def _update_y_X(self, y, X=None, enforce_index_type=None):
         """Update training data.
 
         Parameters
@@ -62,7 +72,7 @@ class _SktimeForecaster(BaseForecaster):
             Exogenous time series
         """
         # update only for non-empty data
-        y, X = check_y_X(y, X, allow_empty=True)
+        y, X = check_y_X(y, X, allow_empty=True, enforce_index_type=enforce_index_type)
 
         if len(y) > 0:
             self._y = y.combine_first(self._y)
@@ -73,6 +83,65 @@ class _SktimeForecaster(BaseForecaster):
             # update X if given
             if X is not None:
                 self._X = X.combine_first(self._X)
+
+    def _get_y_pred(self, y_in_sample, y_out_sample):
+        """Combining in-sample and out-sample prediction
+        and slicing on given fh.
+
+        Parameters
+        ----------
+        y_in_sample : pd.Series
+            In-sample prediction
+        y_out_sample : pd.Series
+            Out-sample prediction
+
+        Returns
+        -------
+        pd.Series
+            y_pred, sliced by fh
+        """
+        y_pred = y_in_sample.append(y_out_sample, ignore_index=True).rename("y_pred")
+        y_pred = pd.DataFrame(y_pred)
+        # Workaround for slicing with negative index
+        y_pred["idx"] = [x for x in range(-len(y_in_sample), len(y_out_sample))]
+        y_pred = y_pred.loc[y_pred["idx"].isin(self.fh.to_indexer(self.cutoff).values)]
+        y_pred.index = self.fh.to_absolute(self.cutoff)
+        y_pred = y_pred["y_pred"].rename(None)
+        return y_pred
+
+    def _get_pred_int(self, lower, upper):
+        """Combining lower and upper bound of
+        prediction intervals. Slicing on fh.
+
+        Parameters
+        ----------
+        lower : pd.Series
+            Lower bound (can contain also in-sample bound)
+        upper : pd.Series
+            Upper bound (can contain also in-sample bound)
+
+        Returns
+        -------
+        pd.DataFrame
+            pred_int, predicion intervalls (out-sample, sliced by fh)
+        """
+        pred_int = pd.DataFrame({"lower": lower, "upper": upper})
+        # Out-sample fh
+        fh_out = self.fh.to_out_of_sample(cutoff=self.cutoff)
+        # If pred_int contains in-sample prediction intervals
+        if len(pred_int) > len(self._y):
+            len_out = len(pred_int) - len(self._y)
+            # Workaround for slicing with negative index
+            pred_int["idx"] = [x for x in range(-len(self._y), len_out)]
+        # If pred_int does not contain in-sample prediction intervals
+        else:
+            pred_int["idx"] = [x for x in range(len(pred_int))]
+        pred_int = pred_int.loc[
+            pred_int["idx"].isin(fh_out.to_indexer(self.cutoff).values)
+        ]
+        pred_int.index = fh_out.to_absolute(self.cutoff)
+        pred_int = pred_int.drop(columns=["idx"])
+        return pred_int
 
     @property
     def cutoff(self):
@@ -116,7 +185,7 @@ class _SktimeForecaster(BaseForecaster):
         # set
         if self._fh is None:
             raise ValueError(
-                "No `fh` has been set yet, please specify `fh` in `fit` or " "`predict`"
+                "No `fh` has been set yet, please specify `fh` " "in `fit` or `predict`"
             )
         return self._fh
 
@@ -222,7 +291,7 @@ class _SktimeForecaster(BaseForecaster):
         y_new,
         fh=None,
         X=None,
-        update_params=False,
+        update_params=True,
         return_pred_int=False,
         alpha=DEFAULT_ALPHA,
     ):
@@ -266,7 +335,7 @@ class _SktimeForecaster(BaseForecaster):
         y,
         fh,
         X=None,
-        update_params=False,
+        update_params=True,
         return_pred_int=False,
         alpha=DEFAULT_ALPHA,
     ):
@@ -279,27 +348,39 @@ class _SktimeForecaster(BaseForecaster):
         self.update(y, X, update_params=update_params)
         return self.predict(fh, X, return_pred_int=return_pred_int, alpha=alpha)
 
-    def update(self, y, X=None, update_params=False):
-        """Update fitted parameters
+    def update(self, y, X=None, update_params=True):
+        """Update cutoff value and, optionally, fitted parameters.
+
+        This is useful in an online learning setting where new data is observed as
+        time moves on. Updating the cutoff value allows to generate new predictions
+        from the most recent time point that was observed. Updating the fitted
+        parameters allows to incrementally update the parameters without having to
+        completely refit. However, note that if no estimator-specific update method
+        has been implemented for updating parameters refitting is the default fall-back
+        option.
 
         Parameters
         ----------
         y : pd.Series
         X : pd.DataFrame
-        update_params : bool, optional (default=False)
+        update_params : bool, optional (default=True)
 
         Returns
         -------
         self : an instance of self
         """
-        if update_params:
-            raise NotImplementedError(
-                f"{self.__class__.__name__} does not "
-                f"yet support updating fitted "
-                f"parameters."
-            )
         self.check_is_fitted()
         self._update_y_X(y, X)
+        if update_params:
+            # default to re-fitting if update is not implemented
+            warn(
+                f"NotImplementedWarning: {self.__class__.__name__} "
+                f"does not have a custom `update` method implemented. "
+                f"{self.__class__.__name__} will be refit each time "
+                f"`update` is called."
+            )
+            # refit with updated data, not only passed data
+            self.fit(self._y, self._X, self.fh)
         return self
 
     def update_predict(
@@ -307,7 +388,7 @@ class _SktimeForecaster(BaseForecaster):
         y,
         cv=None,
         X=None,
-        update_params=False,
+        update_params=True,
         return_pred_int=False,
         alpha=DEFAULT_ALPHA,
     ):
@@ -318,7 +399,7 @@ class _SktimeForecaster(BaseForecaster):
         y : pd.Series
         cv : temporal cross-validation generator, optional (default=None)
         X : pd.DataFrame, optional (default=None)
-        update_params : bool, optional (default=False)
+        update_params : bool, optional (default=True)
         return_pred_int : bool, optional (default=False)
         alpha : int or list of ints, optional (default=None)
 
@@ -348,7 +429,7 @@ class _SktimeForecaster(BaseForecaster):
         y,
         cv,
         X=None,
-        update_params=False,
+        update_params=True,
         return_pred_int=False,
         alpha=DEFAULT_ALPHA,
     ):
@@ -514,7 +595,7 @@ class _BaseWindowForecaster(_SktimeForecaster):
         y,
         cv=None,
         X=None,
-        update_params=False,
+        update_params=True,
         return_pred_int=False,
         alpha=DEFAULT_ALPHA,
     ):
@@ -525,7 +606,7 @@ class _BaseWindowForecaster(_SktimeForecaster):
         y : pd.Series
         cv : temporal cross-validation generator, optional (default=None)
         X : pd.DataFrame, optional (default=None)
-        update_params : bool, optional (default=False)
+        update_params : bool, optional (default=True)
         return_pred_int : bool, optional (default=False)
         alpha : int or list of ints, optional (default=None)
 
@@ -675,7 +756,7 @@ class _BaseWindowForecaster(_SktimeForecaster):
         y,
         fh,
         X=None,
-        update_params=False,
+        update_params=True,
         return_pred_int=False,
         alpha=DEFAULT_ALPHA,
     ):

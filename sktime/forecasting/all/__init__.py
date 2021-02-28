@@ -10,6 +10,7 @@ __all__ = [
     "load_shampoo_sales",
     "CutoffSplitter",
     "ForecastingGridSearchCV",
+    "ForecastingRandomizedSearchCV",
     "SlidingWindowSplitter",
     "SingleWindowSplitter",
     "temporal_train_test_split",
@@ -20,8 +21,7 @@ __all__ = [
     "PolynomialTrendForecaster",
     "TransformedTargetForecaster",
     "Deseasonalizer",
-    "ReducedRegressionForecaster",
-    "ReducedTimeSeriesRegressionForecaster",
+    "ReducedForecaster",
     "EnsembleForecaster",
     "Detrender",
     "sMAPE",
@@ -46,12 +46,14 @@ from sktime.datasets import load_shampoo_sales
 from sktime.forecasting.arima import AutoARIMA
 from sktime.forecasting.base import ForecastingHorizon
 from sktime.forecasting.compose import EnsembleForecaster
-from sktime.forecasting.compose import ReducedRegressionForecaster
-from sktime.forecasting.compose import ReducedTimeSeriesRegressionForecaster
+from sktime.forecasting.compose import ReducedForecaster
 from sktime.forecasting.compose import TransformedTargetForecaster
 from sktime.forecasting.exp_smoothing import ExponentialSmoothing
 from sktime.forecasting.model_selection import CutoffSplitter
-from sktime.forecasting.model_selection import ForecastingGridSearchCV
+from sktime.forecasting.model_selection import (
+    ForecastingGridSearchCV,
+    ForecastingRandomizedSearchCV,
+)
 from sktime.forecasting.model_selection import SingleWindowSplitter
 from sktime.forecasting.model_selection import SlidingWindowSplitter
 from sktime.forecasting.model_selection import temporal_train_test_split
@@ -62,8 +64,8 @@ from sktime.performance_metrics.forecasting import MASE
 from sktime.performance_metrics.forecasting import mase_loss
 from sktime.performance_metrics.forecasting import sMAPE
 from sktime.performance_metrics.forecasting import smape_loss
-from sktime.transformers.series.detrend import Deseasonalizer
-from sktime.transformers.series.detrend import Detrender
+from sktime.transformations.series.detrend import Deseasonalizer
+from sktime.transformations.series.detrend import Detrender
 from sktime.utils.plotting import plot_series
 from sktime.forecasting.online_learning._prediction_weighted_ensembler import (
     NormalHedgeEnsemble,
